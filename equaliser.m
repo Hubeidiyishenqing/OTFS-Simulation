@@ -60,19 +60,23 @@ for j = 1:size(txSig_matrix,2)
     h(:,j) = interp1(sample(:,j),interpPoints);
 end
 
-% Keep only 1st, 7th and 14th samples per carrier
-h1 = [h(:,1)';h(:,7)';h(:,14)']';
+% Keep only 1st, middle and last samples per carrier
+midSym = ceil(ofdmSym/2);
+h1 = [h(:,1)'; h(:,midSym)'; h(:,ofdmSym)']';
 
 % Linearly Interpolate samples between symbols
-interpPoints1 = ( 1 : (1/6) : 2 );              % Calc. points to interpolate
-interpPoints2 = ( (2+(1/7)) : (1/7) : 3 );
+seg1Len = midSym;          % number of symbols in first segment (1 to midSym)
+seg2Len = ofdmSym - midSym; % number of symbols in second segment (midSym to end)
+interpPoints1 = linspace(1, 2, seg1Len);
+interpPoints2 = linspace(2, 3, seg2Len + 1);
+interpPoints2(1) = [];     % avoid duplicating midSym
 for i = 1:size(txSig_matrix,1)
-    h17(i,:) = interp1(h1(i,:),interpPoints1);  % Interpolate 1-7
-    h714(i,:) = interp1(h1(i,:),interpPoints2); % interpolate 7-14
+    h_seg1(i,:) = interp1(h1(i,:), interpPoints1);
+    h_seg2(i,:) = interp1(h1(i,:), interpPoints2);
 end
 
-% Concatenate matracies 
-h = [h17';h714']';
+% Concatenate segments
+h = [h_seg1'; h_seg2']';
 
 % Set eq of CP carriers to same as 1st carrier
 for k = 1:(noSamples-numSC)
