@@ -1,22 +1,25 @@
-function [outSig] = multipathChannel(cpSize, delta_f, inSig, velocity)
+function [H] = multipathChannel(cpSize, delta_f, inSig, velocity)
 
 %--------------------------------------------------------------------------
 %
-%               Generates and encodes random binary data
+%   Generates the time-frequency (TF) domain channel transfer function
+%   for an LEO satellite Rician fading channel with Doppler shift.
+%
+%   Returns a 2D matrix H(subcarrier, symbol) for element-wise
+%   multiplication with the TF-domain signal (after ISFFT, before OFDM mod).
 %
 %--------------------------------------------------------------------------
-% Input arguments: 
+% Input arguments:
 %
-% cpSize                        Size of the cyclic prefix
+% cpSize                        OFDM cyclic prefix ratio
 % delta_f                       OFDM subcarrier spacing (Hz)
-% inSig                         Input signal dimensions used to generate channel dimensions
-% totalBits                     The approximate total bits to be simulated by the system
+% inSig                         Matrix whose size defines the TF grid (N_sc x M_sym)
 % velocity                      Channel mobility in km/hr
-% 
+%
 %--------------------------------------------------------------------------
-% Function returns: 
-% 
-% outSig                        Channel impulse response (serial vector)
+% Function returns:
+%
+% H                             N_sc x M_sym TF-domain channel matrix
 %
 %--------------------------------------------------------------------------
 %
@@ -29,16 +32,12 @@ function [outSig] = multipathChannel(cpSize, delta_f, inSig, velocity)
 %
 %--------------------------------------------------------------------------
 
+% Get TF grid dimensions
+[N_sc, M_sym] = size(inSig);       % subcarriers x OFDM symbols
 
-% Create N x M channel matrix 
-[N, M]= size(inSig');                                     % Size of inSig is used to create channel model
-n = zeros(1,N);                                          % delay_Doppler rows (doppler)
-m = zeros(1,M);                                          % delay_Doppler cols (delay)
-H = transpose(n).*m;                                     % Create matrix
-
-% Generate Channel Parameter (LEO satellite Rician channel)
+% Generate Channel Parameters (LEO satellite Rician channel)
 maxDelayspread = min(0.5*((cpSize)/delta_f), 500e-9); % Cap at 500 ns for LEO
-L = min(round(2*maxDelayspread * M*delta_f), 6);      % Cap at 6 paths for LEO
+L = min(round(2*maxDelayspread * N_sc*delta_f), 6);   % Cap at 6 paths for LEO
 L = max(L, 2);                                         % At least 2 paths
 step = maxDelayspread/L;                  % calculate difference between delays
 pathDelays = (0:step:maxDelayspread);     % Discrete even delays of L-path channel
@@ -66,52 +65,34 @@ fd = round(v*fc/physconst('lightspeed'));% Maximum Doppler shift to nearest Hz
 % All paths share the bulk Doppler shift fd from satellite motion.
 % Multipath scattering adds a small random perturbation on top.
 scatterSpread = 0.05 * fd;   % scattering spread << fd (5% of fd)
+Vi = zeros(1, L);
 for l=0:L-1
     Vi(l+1) = fd + scatterSpread * cos( (2*pi*l)/(L-1) );
 end
 
 % Initialize channel variables
 T = 1/delta_f;                  % unextended OFDM symbol period
-Ts = (1+cpSize)/delta_f;        % OFDM symbol period)
+Ts = (1+cpSize)/delta_f;        % OFDM symbol period with CP
 Ti = pathDelays;                % Path delays
 hi = avgPathGains;              % Path gains
 
-% Create matrix representation of channel
-for m=1:M               % Loop along the rows
-    for n=1:N           % Loop down the cols
-        
-        for x=1:L       % Loop to sum terms in the channel memory     
-            % Define terms of model
-            expTerm = (-2*1i*(pi)) * ((m+M/2).*delta_f.*Ti(x) - Vi(x).*(n).*Ts);
+% Create TF-domain channel matrix H(subcarrier, symbol)
+% H(k, n) = sum_i hi(i) * (1 + j*pi*Vi(i)*T) * exp(-j2pi*(k_freq*df*Ti(i) - Vi(i)*n*Ts))
+% where k_freq is the centered subcarrier index
+H = zeros(N_sc, M_sym);
+
+for sc = 1:N_sc                 % Loop over subcarriers (rows)
+    for sym = 1:M_sym           % Loop over OFDM symbols (columns)
+        for x = 1:L             % Sum over L multipath components
+            % Centered subcarrier frequency index
+            freqIdx = sc + N_sc/2;
+            % TF channel: delay causes frequency-dependent phase,
+            %             Doppler causes time-dependent phase
+            expTerm = (-2*1i*(pi)) * (freqIdx.*delta_f.*Ti(x) - Vi(x).*(sym).*Ts);
             hiPrime = hi(x)*(1 + 1i*(pi).*Vi(x).*T);
-            % Produce channel impulse response model
-            H(n, m) = H(n, m) + exp(expTerm) * hiPrime;
-            
+            H(sc, sym) = H(sc, sym) + exp(expTerm) * hiPrime;
         end
     end
-
 end
 
-
-% % 3D plot of channnel model
-% figure
-% absH = 10*log10(abs(H));
-% mesh(absH)
-% surf(absH)
-% colormap(jet)    % change color map
-% shading interp    % interpolate colors across lines and faces
-% hold on;
-% title(['Time-Frequency Plot of The Fading Channel']);
-% xlabel('Frequency (MHz)');
-% xticks([8 142 274 408 540])
-% xticklabels({'3.496','3.498','3.500','3.502','3.504'})
-% ylabel('Time (ms)');
-% yticks([0 14 28 42 56 70 84 98 112 126 140])
-% yticklabels({'0','1','2','3','4','5','6','7','8','9','10'})
-% zlabel('Power (dB');
-% hold off;
-
-
-% Convert to serial
-outSig = reshape(H',[n*m,1]);
 end
