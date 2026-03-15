@@ -50,9 +50,12 @@ v = velocity*1e3/3600;                   % Mobile speed (m/s)
 fc = 3.5e9;                              % Carrier frequency
 fd = round(v*fc/physconst('lightspeed'));% Maximum Doppler shift to nearest Hz
 
-% Generate doppler spreads w/ Jake's model
+% Generate Doppler shifts for LEO satellite channel
+% All paths share the bulk Doppler shift fd from satellite motion.
+% Multipath scattering adds a small random perturbation on top.
+scatterSpread = 0.05 * fd;   % scattering spread << fd (5% of fd)
 for l=0:L-1
-    Vi(l+1) = fd* cos( (2*pi*l)/(L-1) );
+    Vi(l+1) = fd + scatterSpread * cos( (2*pi*l)/(L-1) );
 end
 
 % Initialize channel variables
