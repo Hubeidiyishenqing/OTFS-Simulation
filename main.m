@@ -35,7 +35,7 @@ k = log2(M);                    % Bits/symbol
 cpSize = 0.07;                  % OFDM cyclic prefix size
 scs = 15e3;                     % Subcarrier spacing Hz
 Bw = 10e6;                      % System bandwidth Hz
-ofdmSym = 14;                   % No. OFDM symbols / subframe 
+ofdmSym = 40;                   % No. OFDM symbols / subframe (>=39 for Doppler resolution < fd)
 EbNo = (-3:1:30)';              % Range of energy/bit to noise power ratio
 velocity = 120;                 % Velocity of mobile rx relative tx km/hr
 fc = 3.5e9;                     % Carrier frequency (Hz) - must match multipathChannel.m
