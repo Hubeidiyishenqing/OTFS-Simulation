@@ -1,4 +1,4 @@
-function [H] = multipathChannel(cpSize, delta_f, inSig, velocity)
+function [H, chInfo] = multipathChannel(cpSize, delta_f, inSig, velocity)
 
 %--------------------------------------------------------------------------
 %
@@ -75,6 +75,13 @@ T = 1/delta_f;                  % unextended OFDM symbol period
 Ts = (1+cpSize)/delta_f;        % OFDM symbol period with CP
 Ti = pathDelays;                % Path delays
 hi = avgPathGains;              % Path gains
+
+% Return channel parameters for DD-domain processing
+chInfo.pathDelays_s = Ti;       % Path delays in seconds
+chInfo.pathDopplers_Hz = Vi;    % Path Doppler shifts in Hz
+chInfo.pathGains = hi;          % Path complex gains
+chInfo.numPaths = L;            % Number of paths
+chInfo.fd = fd;                 % Max Doppler shift (Hz)
 
 % Create TF-domain channel matrix H(subcarrier, symbol)
 % H(k, n) = sum_i hi(i) * (1 + j*pi*Vi(i)*T) * exp(-j2pi*(k_freq*df*Ti(i) - Vi(i)*n*Ts))

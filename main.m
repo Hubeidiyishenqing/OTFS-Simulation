@@ -96,7 +96,7 @@ for repetition=1:repeats                                % Repeat simulation mult
     
     % Generate TF-domain channel matrix H(subcarrier, symbol)
     tfGridSize = zeros(numSC, ofdmSym);                              % TF grid dimensions
-    channelTF = multipathChannel(cpSize, scs, tfGridSize, velocity); % TF-domain channel
+    [channelTF, chInfo] = multipathChannel(cpSize, scs, tfGridSize, velocity); % TF-domain channel + DD params
     
     % QAM Modulator
     qamTx = qammod(dataIn,M,'InputType','bit','UnitAveragePower',true);    % Apply QAM modulation
@@ -293,11 +293,14 @@ for repetition=1:repeats                                % Repeat simulation mult
     % --- Transmitter: Place pilot + data on DD grid ---
     % For each subframe, create DD grid with pilot pattern
     frameBuffer_coded = guardbandTx;    % Use same guard-banded QAM data
-    txframeBuffer_pilot = [];
 
     % Store pilot info for all subframes (same pattern each subframe)
     pilotConfig.lp = ceil(size(guardbandTx,1)/2);  % Update to match actual grid rows
     pilotConfig.kp = ceil(ofdmSym/2);
+
+    txDDGrids = cell(packetSize, 1);
+    rxDDGrids_faded = cell(packetSize, 1);
+    ddGridSize = [size(guardbandTx,1), ofdmSym];
 
     for w = 1:packetSize
         subframe = frameBuffer_coded(:, 1:ofdmSym);
@@ -310,32 +313,25 @@ for repetition=1:repeats                                % Repeat simulation mult
         [ddGrid, dataIdx, pilotIdx, guardIdx, pilotInfoTx] = ...
             pilotPatternDD(dataSyms, size(subframe,1), ofdmSym, pilotConfig);
 
-        % OTFS modulation: DD -> TF -> apply channel in TF -> time domain
-        otfsTx = ISFFT(ddGrid);                                         % DD → TF
-        fadedTF = channelTF .* otfsTx;                                  % Channel in TF domain
-        ofdmTx = modOFDM(fadedTF, numSC, cpLen, ofdmSym);              % TF → time domain
-        txframeBuffer_pilot = [txframeBuffer_pilot; ofdmTx];
+        % Apply channel directly in DD domain (exact for any Doppler)
+        txDDGrids{w} = ddGrid;
+        rxDDGrids_faded{w} = applyChannelDD(ddGrid, chInfo, scs, cpSize);
     end
 
-    % --- Channel + Receiver ---
+    % --- Receiver: Add noise in DD domain and estimate/equalize ---
     for m = 1:length(EbNo)
         for j = 1:numPackets
             rxframeBuffer = [];
 
             for u = 1:packetSize
-                % Extract subframe (already channel-affected in TF domain)
-                txSig = txframeBuffer_pilot( ((u-1)*numel(ofdmTx)+1) : u*numel(ofdmTx) );
+                rxDD_faded = rxDDGrids_faded{u};
 
-                % AWGN Channel (noise added in time domain)
-                release(awgnChannel);
-                powerDB = 10*log10(var(txSig));
-                noiseVar = 10.^(0.1*(powerDB-snr(m)));
-                rxSig = awgnChannel(txSig, noiseVar);
-
-                % OFDM demodulation -> SFFT (TF -> DD)
-                % Do NOT equalize before SFFT — DD pilot needs raw channel response
-                otfsRx_raw = demodOFDM(rxSig, cpLen, ofdmSym);
-                rxDD = SFFT(otfsRx_raw);
+                % Add AWGN directly in DD domain
+                % (SFFT/ISFFT are unitary transforms, so AWGN statistics are preserved)
+                sigPower = 10*log10(mean(abs(rxDD_faded(:)).^2));
+                noiseVar = 10^(0.1*(sigPower - snr(m)));
+                noise = sqrt(noiseVar/2) * (randn(size(rxDD_faded)) + 1j*randn(size(rxDD_faded)));
+                rxDD = rxDD_faded + noise;
 
                 % DD-domain channel estimation using pilot
                 [hEst, delayEst, dopplerEst, navInfo] = ddChannelEstimate(rxDD, pilotInfoTx);
@@ -344,7 +340,7 @@ for repetition=1:repeats                                % Repeat simulation mult
                 [eqDD, eqDataSyms] = otfsEqualiserDD(rxDD, hEst, dataIdx, pilotInfoTx);
 
                 % Reconstruct subframe from equalized data at data positions
-                rxSubframe = zeros(size(subframe));
+                rxSubframe = zeros(ddGridSize);
                 if length(eqDataSyms) >= length(dataIdx)
                     rxSubframe(dataIdx) = eqDataSyms(1:length(dataIdx));
                 end
