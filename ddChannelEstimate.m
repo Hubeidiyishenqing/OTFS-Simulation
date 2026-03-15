@@ -12,11 +12,20 @@ function [hEst, delayEst, dopplerEst, navInfo] = ddChannelEstimate(rxGrid, pilot
 %   The channel taps h_i at (l_i, k_i) can be read directly from the
 %   guard region of the received grid.
 %
+%   Scanning is restricted to physically valid regions:
+%   - Delay: [0, maxDelayBins] (channel delays are non-negative)
+%   - Doppler: [-maxDopplerBins, +maxDopplerBins] (residual after pre-comp)
+%   This prevents data contamination from being detected as false paths.
+%
 %--------------------------------------------------------------------------
 % Input arguments:
 %
 % rxGrid            N x M received DD grid (after SFFT demodulation)
-% pilotInfo         Struct from pilotPatternDD with pilot position info
+% pilotInfo         Struct from pilotPatternDD with pilot position info:
+%                     .lp, .kp       - pilot position
+%                     .lGuard, .kGuard - guard band sizes (for data placement)
+%                     .maxDelayBins  - max physical delay (bins), scan bound
+%                     .maxDopplerBins - max residual Doppler (bins), scan bound
 %
 %--------------------------------------------------------------------------
 % Function returns:
@@ -24,11 +33,7 @@ function [hEst, delayEst, dopplerEst, navInfo] = ddChannelEstimate(rxGrid, pilot
 % hEst              N x M estimated DD domain channel matrix
 % delayEst          Estimated delay indices of channel paths
 % dopplerEst        Estimated Doppler indices of channel paths
-% navInfo           Struct with navigation-relevant measurements:
-%                     .pathDelays     - delay of each detected path
-%                     .pathDopplers   - Doppler shift of each path
-%                     .pathGains      - complex gain of each path
-%                     .snrPilot       - estimated pilot SNR
+% navInfo           Struct with navigation-relevant measurements
 %
 %--------------------------------------------------------------------------
 
@@ -38,50 +43,54 @@ lp = pilotInfo.lp;
 kGuard = pilotInfo.kGuard;
 lGuard = pilotInfo.lGuard;
 
-%% Extract the guard region from the received grid
-% The channel response appears as copies of the pilot shifted by (l_i, k_i)
-% We read the guard region centered at (lp, kp) to capture these copies.
-guardRows = max(1, lp - lGuard) : min(N, lp + lGuard);
-guardCols = max(1, kp - kGuard) : min(M, kp + kGuard);
+% Physical scan bounds (restrict to valid channel response region)
+if isfield(pilotInfo, 'maxDelayBins')
+    maxDelayBins = pilotInfo.maxDelayBins;
+else
+    maxDelayBins = lGuard;   % Fallback: scan full guard
+end
+if isfield(pilotInfo, 'maxDopplerBins')
+    maxDopplerBins = pilotInfo.maxDopplerBins;
+else
+    maxDopplerBins = kGuard;  % Fallback: scan full guard
+end
 
-guardRegion = rxGrid(guardRows, guardCols);
+%% Define scan region (physically valid channel response area only)
+% Delay: channel delays are non-negative, so scan [lp, lp + maxDelayBins]
+% Doppler: after pre-comp, residual is bounded by ±maxDopplerBins
+scanRows = lp : min(N, lp + maxDelayBins);
+scanCols = max(1, kp - maxDopplerBins) : min(M, kp + maxDopplerBins);
 
-%% Detect channel paths via threshold
-% Estimate noise power from corners of the guard region
-% (where no channel response should appear if guard is large enough)
-pilotEnergy = abs(rxGrid(lp, kp))^2;
-noiseEst = median(abs(guardRegion(:)).^2) * 0.5;  % Robust noise estimate
-
-% Detection threshold: paths above noise floor
-thresholddB = 6;   % 6 dB above noise floor
-threshold = sqrt(noiseEst * 10^(thresholddB/10));
+%% Detection threshold: pilot-relative
+% Real channel responses have amplitude = pilot_amplitude * channel_gain.
+% Use a threshold relative to the pilot to reject data contamination.
+% With pilot boost of ~10 dB, pilot amplitude ≈ 3.16x data amplitude.
+% Threshold at -8 dB below pilot catches paths with |h| > 0.4 (rel to LoS)
+% while rejecting data contamination (amplitude ~ 1/pilot_boost).
+pilotAmp = abs(rxGrid(lp, kp));
+threshRelativedB = -8;  % Detect paths down to -8 dB below pilot
+threshold = pilotAmp * 10^(threshRelativedB/20);
 
 %% Build DD channel impulse response
 hEst = zeros(N, M);
 
-% Scan the guard region for significant taps
+% Scan the valid region for significant taps
 delayEst = [];
 dopplerEst = [];
 pathGains = [];
 
-for r = 1:length(guardRows)
-    for c = 1:length(guardCols)
-        lr = guardRows(r);
-        kc = guardCols(c);
+for r = 1:length(scanRows)
+    for c = 1:length(scanCols)
+        lr = scanRows(r);
+        kc = scanCols(c);
         val = rxGrid(lr, kc);
 
         if abs(val) > threshold
-            % Channel tap detected at relative position (lr-lp, kc-kp)
-            % Normalize by transmitted pilot amplitude
-            hTap = val / rxGrid(lp, kp) * abs(rxGrid(lp, kp));
-
-            % Place in DD channel matrix
-            % The channel response at (l, k) means a path with
-            % delay index = l - lp (mod N) and Doppler index = k - kp (mod M)
+            % Channel tap detected
             delayShift = lr - lp;
             dopplerShift = kc - kp;
 
-            % Map to DD channel matrix (circular shift)
+            % Place in DD channel matrix (circular shift)
             delayIdx = mod(delayShift, N) + 1;
             dopplerIdx = mod(dopplerShift, M) + 1;
             hEst(delayIdx, dopplerIdx) = val;
@@ -103,8 +112,6 @@ end
 
 %% Fractional Doppler estimation for LoS path (Quinn estimator)
 % Quinn's second estimator uses complex DFT bins for optimal accuracy.
-% Reference: Quinn, "Estimating frequency by interpolation using
-%            Fourier coefficients," IEEE Trans. SP, 1994.
 [~, losIdx] = max(abs(pathGains));
 losRow = lp + delayEst(losIdx);   % row index in rxGrid
 losCol = kp + dopplerEst(losIdx); % col index in rxGrid
@@ -112,24 +119,21 @@ losCol = kp + dopplerEst(losIdx); % col index in rxGrid
 % Quinn estimator along Doppler (column) dimension
 fracDopplerShift = dopplerEst(losIdx);  % default: integer bin
 if losCol > 1 && losCol < M
-    Xm1 = rxGrid(losRow, losCol - 1);   % Complex value at k-1
-    X0  = rxGrid(losRow, losCol);        % Complex value at k (peak)
-    Xp1 = rxGrid(losRow, losCol + 1);   % Complex value at k+1
+    Xm1 = rxGrid(losRow, losCol - 1);
+    X0  = rxGrid(losRow, losCol);
+    Xp1 = rxGrid(losRow, losCol + 1);
 
-    % Quinn's second estimator
     ap = real(Xp1 / X0);
     am = real(Xm1 / X0);
     dp = -ap / (1 - ap);
     dm = am / (1 - am);
 
-    % Use the estimate from the side with smaller magnitude
     if abs(dp) < abs(dm)
         delta_k = dp;
     else
         delta_k = dm;
     end
 
-    % Clamp to ±0.5 for safety
     delta_k = max(-0.5, min(0.5, delta_k));
     fracDopplerShift = dopplerEst(losIdx) + delta_k;
 end
@@ -157,6 +161,9 @@ if losRow > 1 && losRow < N
 end
 
 %% Navigation information extraction
+pilotEnergy = abs(rxGrid(lp, kp))^2;
+noiseEst = median(abs(rxGrid(:)).^2) * 0.5;  % Noise from full grid
+
 navInfo.pathDelays = delayEst;
 navInfo.pathDopplers = dopplerEst;
 navInfo.pathGains = pathGains;
@@ -168,7 +175,7 @@ else
     navInfo.snrPilot = Inf;
 end
 navInfo.numPathsDetected = length(delayEst);
-navInfo.losFracDoppler = fracDopplerShift;  % Fractional Doppler of LoS (bins)
-navInfo.losFracDelay = fracDelayShift;      % Fractional delay of LoS (bins)
+navInfo.losFracDoppler = fracDopplerShift;
+navInfo.losFracDelay = fracDelayShift;
 
 end

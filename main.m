@@ -84,11 +84,15 @@ fd_precomp_hz = fd_hz;                                      % Pre-comp value (fr
 residualScatter_hz = 0.05 * fd_hz;                          % Residual scatter after pre-comp
 residualScatter_bins = ceil(residualScatter_hz / delta_nu_hz);
 
-pilotConfig.kp = ceil(ofdmSym/2);                           % Pilot Doppler index (center)
-pilotConfig.lp = ceil((Bw/scs - 12)/2);                     % Pilot delay index (center)
-pilotConfig.lGuard = 2 * ceil(maxDelayspread_s / delta_tau_s) + 1; % Delay guard: 2x for data protection
-pilotConfig.kGuard = 2 * residualScatter_bins + 2;          % Doppler guard: residual only (pre-comp)
-pilotConfig.pilotBoostdB = 10;                               % Pilot power boost (dB)
+maxDelayBins = ceil(maxDelayspread_s / delta_tau_s);            % Physical max delay (bins)
+
+pilotConfig.kp = ceil(ofdmSym/2);                              % Pilot Doppler index (center)
+pilotConfig.lp = ceil((Bw/scs - 12)/2);                        % Pilot delay index (center)
+pilotConfig.lGuard = 2 * maxDelayBins + 1;                     % Delay guard: 2x for data protection
+pilotConfig.kGuard = 2 * residualScatter_bins + 2;             % Doppler guard: residual only (pre-comp)
+pilotConfig.maxDelayBins = maxDelayBins;                        % Scan bound: physical delay range
+pilotConfig.maxDopplerBins = residualScatter_bins + 1;          % Scan bound: residual Doppler range
+pilotConfig.pilotBoostdB = 10;                                  % Pilot power boost (dB)
 
 % Create Vectors for storing error data
 berOFDM = zeros(length(EbNo),3); berCOFDM = zeros(length(EbNo),3); berOTFS = zeros(length(EbNo),3); berCOTFS = zeros(length(EbNo),3);
