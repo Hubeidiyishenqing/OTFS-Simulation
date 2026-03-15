@@ -65,8 +65,19 @@ ldpcDecoder = comm.LDPCDecoder(parityCheck_matrix);     % Create decoder system 
 ldpcDecoder.MaximumIterationCount = maxIterations;      % Assign decoder's maximum iterations
 noCodedbits = size(parityCheck_matrix,2);               % Find the Codeword length
 
+%--------------------------------------------------------------------------
+% LEO Satellite Pilot Pattern Configuration (DD domain)
+%--------------------------------------------------------------------------
+% For LEO: large Doppler spread requires wide Doppler guard band
+pilotConfig.kp = ceil(ofdmSym/2);       % Pilot Doppler index (center)
+pilotConfig.lp = ceil((Bw/scs - 12)/2); % Pilot delay index (center of data carriers)
+pilotConfig.kGuard = 4;                 % Doppler guard (wide for LEO high Doppler)
+pilotConfig.lGuard = 2;                 % Delay guard
+pilotConfig.pilotBoostdB = 10;          % Pilot power boost (dB) - balance nav vs comm
+
 % Create Vectors for storing error data
 berOFDM = zeros(length(EbNo),3); berCOFDM = zeros(length(EbNo),3); berOTFS = zeros(length(EbNo),3); berCOTFS = zeros(length(EbNo),3);
+berOTFS_pilot = zeros(length(EbNo),3); berCOTFS_pilot = zeros(length(EbNo),3);
 errorStats_coded = zeros(1,3); errorStats_uncoded = zeros(1,3);
 
 for repetition=1:repeats                                % Repeat simulation multiple times with a unqique channel for each repeat
@@ -262,15 +273,161 @@ for repetition=1:repeats                                % Repeat simulation mult
         berCOTFS(m,:) = errorStats_coded;                                   % Save coded BER data
         errorStats_uncoded = errorRate(codedData_in,codedData_out,1);       % Reset the error rate calculator
         errorStats_coded = errorRate1(dataBits_in,dataBits_out,1);          % Reset the error rate calculator
-        
+
     end
-    
+
+
+%--------------------------------------------------------------------------
+%              OTFS with DD-Domain Pilot Pattern (LEO Satellite)
+%--------------------------------------------------------------------------
+
+    % Calculate SNR (same as OTFS)
+    snr = EbNo + 10*log10(codeRate*k) + 10*log10(numDC/((numSC))) + 10*log10(sqrt(ofdmSym));
+
+    % --- Transmitter: Place pilot + data on DD grid ---
+    % For each subframe, create DD grid with pilot pattern
+    frameBuffer_coded = guardbandTx;    % Use same guard-banded QAM data
+    txframeBuffer_pilot = [];
+
+    % Store pilot info for all subframes (same pattern each subframe)
+    pilotConfig.lp = ceil(size(guardbandTx,1)/2);  % Update to match actual grid rows
+    pilotConfig.kp = ceil(ofdmSym/2);
+
+    for w = 1:packetSize
+        subframe = frameBuffer_coded(:, 1:ofdmSym);
+        frameBuffer_coded(:, 1:ofdmSym) = [];
+
+        % Extract data symbols from subframe (column-major order)
+        dataSyms = subframe(:);
+
+        % Create DD grid with pilot pattern
+        [ddGrid, dataIdx, pilotIdx, guardIdx, pilotInfoTx] = ...
+            pilotPatternDD(dataSyms, size(subframe,1), ofdmSym, pilotConfig);
+
+        % OTFS modulation: ISFFT (DD -> TF) then OFDM modulation
+        otfsTx = ISFFT(ddGrid);
+        ofdmTx = modOFDM(otfsTx, numSC, cpLen, ofdmSym);
+        txframeBuffer_pilot = [txframeBuffer_pilot; ofdmTx];
+    end
+
+    % --- Channel + Receiver ---
+    for m = 1:length(EbNo)
+        for j = 1:numPackets
+            rxframeBuffer = [];
+
+            for u = 1:packetSize
+                % Extract subframe
+                txSig = txframeBuffer_pilot( ((u-1)*numel(ofdmTx)+1) : u*numel(ofdmTx) );
+
+                % Apply multipath fading channel
+                fadedSig = zeros(size(txSig));
+                for i = 1:size(txSig,1)
+                    for jj = 1:size(txSig,2)
+                        fadedSig(i,jj) = txSig(i,jj).*rayChan(i,jj);
+                    end
+                end
+
+                % AWGN Channel
+                release(awgnChannel);
+                powerDB = 10*log10(var(fadedSig));
+                noiseVar = 10.^(0.1*(powerDB-snr(m)));
+                rxSig = awgnChannel(fadedSig, noiseVar);
+
+                % OFDM demodulation -> SFFT (TF -> DD)
+                % Use time-domain equalizer first, then SFFT
+                eqSig = equaliser(rxSig, fadedSig, txSig, ofdmSym);
+                otfsRx = demodOFDM(eqSig, cpLen, ofdmSym);
+                rxDD = SFFT(otfsRx);
+
+                % DD-domain channel estimation using pilot
+                [hEst, delayEst, dopplerEst, navInfo] = ddChannelEstimate(rxDD, pilotInfoTx);
+
+                % DD-domain equalization
+                [eqDD, eqDataSyms] = otfsEqualiserDD(rxDD, hEst, dataIdx, pilotInfoTx);
+
+                % Reconstruct subframe from equalized data at data positions
+                rxSubframe = zeros(size(subframe));
+                if length(eqDataSyms) >= length(dataIdx)
+                    rxSubframe(dataIdx) = eqDataSyms(1:length(dataIdx));
+                end
+
+                rxframeBuffer = [rxframeBuffer'; rxSubframe']';
+            end
+
+            % Remove guard band nulls (same as original OTFS path)
+            parallelRx = rxframeBuffer;
+            parallelRx((numDC/2)+1:(numDC/2)+11, :) = [];
+            parallelRx(1:1, :) = [];
+            qamRx = reshape(parallelRx, [numel(parallelRx), 1]);
+
+            % Uncoded demodulation
+            dataOut = qamdemod(qamRx, M, 'OutputType', 'bit', 'UnitAveragePower', true);
+            codedData_out = randdeintrlv(dataOut, 4831);
+            codedData_out(numel(codedData_in)+1:end) = [];
+            errorStats_uncoded = errorRate(codedData_in, codedData_out, 0);
+
+            % Coded demodulation
+            powerDB = 10*log10(var(qamRx));
+            noiseVar = 10.^(0.1*(powerDB-(EbNo(m) + 10*log10(codeRate*k) - 10*log10(sqrt(numDC)))));
+            dataOut = qamdemod(qamRx, M, 'OutputType', 'approxllr', 'UnitAveragePower', true, 'NoiseVariance', noiseVar);
+            codedData_out1 = randdeintrlv(dataOut, 4831);
+            codedData_out1(numel(codedData_in)+1:end) = [];
+
+            dataBits_out = [];
+            dataOut_buffer = codedData_out1;
+            for q = 1:numCB
+                dataBits_out = [dataBits_out; ldpcDecoder(dataOut_buffer(1:noCodedbits))];
+                dataOut_buffer(1:noCodedbits) = [];
+            end
+            dataBits_out = double(dataBits_out);
+            errorStats_coded = errorRate1(dataBits_in, dataBits_out, 0);
+        end
+
+        berOTFS_pilot(m,:) = errorStats_uncoded;
+        berCOTFS_pilot(m,:) = errorStats_coded;
+        errorStats_uncoded = errorRate(codedData_in, codedData_out, 1);
+        errorStats_coded = errorRate1(dataBits_in, dataBits_out, 1);
+    end
+
+    % Print navigation info from last subframe
+    fprintf('\n--- LEO Navigation Info (from DD-domain pilot) ---\n');
+    fprintf('Detected %d channel paths\n', navInfo.numPathsDetected);
+    fprintf('Pilot SNR: %.1f dB\n', navInfo.snrPilot);
+    fprintf('Pilot overhead: %.1f%%\n', pilotInfoTx.overheadPercent);
+    fprintf('Effective pilot boost: %.1f dB\n', pilotInfoTx.effectivePilotBoostdB);
+    for pp = 1:length(navInfo.pathDelays)
+        fprintf('  Path %d: delay=%+d bins, Doppler=%+d bins, |gain|=%.3f\n', ...
+            pp, navInfo.pathDelays(pp), navInfo.pathDopplers(pp), abs(navInfo.pathGains(pp)));
+    end
+    fprintf('---------------------------------------------------\n');
+
 end
 
 %--------------------------------------------------------------------------
 %                           Figures
 %-------------------------------------------------------------------------- 
 
-% Plot BER / EbNo curves
-plotGraphs(berOFDM, berCOFDM, berOTFS, berCOTFS, M, numSC, EbNo);
+% Plot BER / EbNo curves (including OTFS-Pilot results)
+plotGraphs(berOFDM, berCOFDM, berOTFS, berCOTFS, M, numSC, EbNo, berOTFS_pilot, berCOTFS_pilot);
+
+% Plot DD-domain pilot pattern visualization
+figure;
+ddVis = zeros(size(guardbandTx,1), ofdmSym);
+ddVis(dataIdx) = 0.3;                  % Data positions (gray)
+ddVis(guardIdx) = 0;                   % Guard band (black)
+ddVis(pilotIdx) = 1;                   % Pilot (bright)
+imagesc(ddVis);
+colormap(hot);
+colorbar;
+title('Delay-Doppler Grid: Pilot Pattern with Guard Bands');
+xlabel('Doppler Index (OFDM symbols)');
+ylabel('Delay Index (Subcarriers)');
+hold on;
+% Draw guard band rectangle
+rectangle('Position', [pilotConfig.kp-pilotConfig.kGuard-0.5, ...
+    pilotConfig.lp-pilotConfig.lGuard-0.5, ...
+    2*pilotConfig.kGuard+1, 2*pilotConfig.lGuard+1], ...
+    'EdgeColor', 'c', 'LineWidth', 2, 'LineStyle', '--');
+legend('Guard Band Boundary');
+hold off;
 
