@@ -94,9 +94,9 @@ for repetition=1:repeats                                % Repeat simulation mult
     % Generate and Encode data
     [dataIn, dataBits_in, codedData_in, packetSize, numPackets, numCB] = dataGen(k,numDC,ofdmSym,totalBits,codeRate,ldpcEncoder);
     
-    % Generate Rayleigh Fading Channel Impulse Response
-    txSig_size = zeros((numSC+cpLen),ofdmSym);                       % Assign the size of the channel
-    rayChan = multipathChannel(cpSize, scs, txSig_size, velocity);   % Create fading channel impulse response
+    % Generate TF-domain channel matrix H(subcarrier, symbol)
+    tfGridSize = zeros(numSC, ofdmSym);                              % TF grid dimensions
+    channelTF = multipathChannel(cpSize, scs, tfGridSize, velocity); % TF-domain channel
     
     % QAM Modulator
     qamTx = qammod(dataIn,M,'InputType','bit','UnitAveragePower',true);    % Apply QAM modulation
@@ -115,45 +115,44 @@ for repetition=1:repeats                                % Repeat simulation mult
     % Calculate SNR
     snr = EbNo + 10*log10(codeRate*k) + 10*log10(numDC/((numSC)));
     
-    % Multicarrier Modulation
-    frameBuffer = guardbandTx;          % Create a 'buffer' so subframes can be individually modulated
-    txframeBuffer = [];                 % Initilaise matrix
+    % Multicarrier Modulation (OFDM)
+    % Apply channel in TF domain, then modulate to time domain
+    frameBuffer = guardbandTx;
+    txframeBuffer_faded = [];           % Faded time-domain signals
+    txframeBuffer_clean = [];           % Clean time-domain signals
     for w = 1:packetSize
-        ofdmTx = modOFDM(frameBuffer(:,1:ofdmSym),numSC,cpLen,ofdmSym);    % Apply OFDM modulation to a subframe of data
-        frameBuffer(:, 1:ofdmSym) = [];                                    % Delete modulated data from frameBuffer
-        txframeBuffer = [txframeBuffer;ofdmTx];                            % Add modulated subframe to transmit buffer
+        subframeTF = frameBuffer(:,1:ofdmSym);                              % TF-domain subframe
+        fadedTF = channelTF .* subframeTF;                                  % Apply channel in TF domain
+        ofdmTx_faded = modOFDM(fadedTF, numSC, cpLen, ofdmSym);            % Faded → time domain
+        ofdmTx_clean = modOFDM(subframeTF, numSC, cpLen, ofdmSym);         % Clean → time domain
+        frameBuffer(:, 1:ofdmSym) = [];
+        txframeBuffer_faded = [txframeBuffer_faded; ofdmTx_faded];
+        txframeBuffer_clean = [txframeBuffer_clean; ofdmTx_clean];
     end
-    
-    
+
+
     % Loop through different values of EbNo
     for m = 1:length(EbNo)
         % Loop through the of packets to be transmitted
         for j = 1:numPackets
             rxframeBuffer = [];                 % Initialise matrix
-            
+
             % Transmit each subframe individually
             for u = 1:packetSize
-                
-                % Remove next subframe from the transmit buffer
-                txSig = txframeBuffer( ((u-1)*numel(ofdmTx)+1) : u*numel(ofdmTx) );
-                
-                % Apply Channel to input signal
-                fadedSig = zeros(size(txSig));                    % Pre-allocate vector size
-                for i = 1:size(txSig,1)                           % Perform elementwise...
-                    for j = 1:size(txSig,2)                       % ...matrix multiplication
-                        fadedSig(i,j) = txSig(i,j).*rayChan(i,j);
-                    end
-                end
-                
+
+                % Extract faded and clean subframes
+                fadedSig = txframeBuffer_faded( ((u-1)*numel(ofdmTx_faded)+1) : u*numel(ofdmTx_faded) );
+                txSig = txframeBuffer_clean( ((u-1)*numel(ofdmTx_clean)+1) : u*numel(ofdmTx_clean) );
+
                 % AWGN Channel
                 release(awgnChannel);
                 powerDB = 10*log10(var(fadedSig));            % Calculate Tx signal power
                 noiseVar = 10.^(0.1*(powerDB-snr(m)));        % Calculate the noise variance
                 rxSig = awgnChannel(fadedSig,noiseVar);       % Pass the signal through a noisy channel
-                
+
                 % Equalisation
                 eqSig = equaliser(rxSig,fadedSig,txSig,ofdmSym);
-                
+
                 % Demodulation
                 rxSubframe = demodOFDM(eqSig,cpLen,ofdmSym);     % Apply OFDM demodulation
                 rxframeBuffer = [rxframeBuffer';rxSubframe']';         % Store demodulated subframe in rx buffer
@@ -203,45 +202,43 @@ for repetition=1:repeats                                % Repeat simulation mult
     % Calculate SNR
     snr = EbNo + 10*log10(codeRate*k) + 10*log10(numDC/((numSC))) + 10*log10(sqrt(ofdmSym));
     
-    % Multicarrier Modulation
-    frameBuffer = guardbandTx;          % Create a 'buffer' so subframes can be individually modulated
-    txframeBuffer = [];                 % Initilaise matrix
+    % Multicarrier Modulation (OTFS)
+    % Apply channel in TF domain between ISFFT and OFDM mod
+    frameBuffer = guardbandTx;
+    txframeBuffer_faded = [];
+    txframeBuffer_clean = [];
     for w = 1:packetSize
-        otfsTx = ISFFT(frameBuffer(:,1:ofdmSym));       % Apply OTFS modulation to a subframe of data
-        ofdmTx = modOFDM(otfsTx,numSC,cpLen,ofdmSym);    % Apply OFDM modulation
-        frameBuffer(:, 1:ofdmSym) = [];                  % Delete modulated data from frameBuffer
-        txframeBuffer = [txframeBuffer;ofdmTx];          % Add modulated subframe to transmit buffer
+        otfsTF = ISFFT(frameBuffer(:,1:ofdmSym));                  % DD → TF domain
+        fadedTF = channelTF .* otfsTF;                              % Apply channel in TF domain
+        ofdmTx_faded = modOFDM(fadedTF, numSC, cpLen, ofdmSym);    % Faded → time domain
+        ofdmTx_clean = modOFDM(otfsTF, numSC, cpLen, ofdmSym);     % Clean → time domain
+        frameBuffer(:, 1:ofdmSym) = [];
+        txframeBuffer_faded = [txframeBuffer_faded; ofdmTx_faded];
+        txframeBuffer_clean = [txframeBuffer_clean; ofdmTx_clean];
     end
-    
+
     % Loop through different values of EbNo
     for m = 1:length(EbNo)
         % Loop through the of packets to be transmitted
         for j = 1:numPackets
             rxframeBuffer = [];                 % Initialise matrix
-            
+
             % Transmit each subframe individually
             for u = 1:packetSize
-                
-                % Remove next subframe from the transmit buffer
-                txSig = txframeBuffer( ((u-1)*numel(ofdmTx)+1) : u*numel(ofdmTx) );
-                
-                % Apply Channel to input signal
-                fadedSig = zeros(size(txSig));                    % Pre-allocate vector size
-                for i = 1:size(txSig,1)                           % Perform elementwise...
-                    for j = 1:size(txSig,2)                       % ...matrix multiplication
-                        fadedSig(i,j) = txSig(i,j).*rayChan(i,j);
-                    end
-                end
-                
+
+                % Extract faded and clean subframes
+                fadedSig = txframeBuffer_faded( ((u-1)*numel(ofdmTx_faded)+1) : u*numel(ofdmTx_faded) );
+                txSig = txframeBuffer_clean( ((u-1)*numel(ofdmTx_clean)+1) : u*numel(ofdmTx_clean) );
+
                 % AWGN Channel
                 release(awgnChannel);
                 powerDB = 10*log10(var(fadedSig));            % Calculate Tx signal power
                 noiseVar = 10.^(0.1*(powerDB-snr(m)));        % Calculate the noise variance
                 rxSig = awgnChannel(fadedSig,noiseVar);       % Pass the signal through a noisy channel
-                
+
                 % Equalisation
                 eqSig = equaliser(rxSig,fadedSig,txSig,ofdmSym);
-                
+
                 % Demodulation
                 otfsRx = demodOFDM(eqSig,cpLen,ofdmSym);     % Apply OFDM demodulation
                 rxSubframe = SFFT(otfsRx);                      % Apply OTFS demodulation
@@ -313,9 +310,10 @@ for repetition=1:repeats                                % Repeat simulation mult
         [ddGrid, dataIdx, pilotIdx, guardIdx, pilotInfoTx] = ...
             pilotPatternDD(dataSyms, size(subframe,1), ofdmSym, pilotConfig);
 
-        % OTFS modulation: ISFFT (DD -> TF) then OFDM modulation
-        otfsTx = ISFFT(ddGrid);
-        ofdmTx = modOFDM(otfsTx, numSC, cpLen, ofdmSym);
+        % OTFS modulation: DD -> TF -> apply channel in TF -> time domain
+        otfsTx = ISFFT(ddGrid);                                         % DD → TF
+        fadedTF = channelTF .* otfsTx;                                  % Channel in TF domain
+        ofdmTx = modOFDM(fadedTF, numSC, cpLen, ofdmSym);              % TF → time domain
         txframeBuffer_pilot = [txframeBuffer_pilot; ofdmTx];
     end
 
@@ -325,22 +323,14 @@ for repetition=1:repeats                                % Repeat simulation mult
             rxframeBuffer = [];
 
             for u = 1:packetSize
-                % Extract subframe
+                % Extract subframe (already channel-affected in TF domain)
                 txSig = txframeBuffer_pilot( ((u-1)*numel(ofdmTx)+1) : u*numel(ofdmTx) );
 
-                % Apply multipath fading channel
-                fadedSig = zeros(size(txSig));
-                for i = 1:size(txSig,1)
-                    for jj = 1:size(txSig,2)
-                        fadedSig(i,jj) = txSig(i,jj).*rayChan(i,jj);
-                    end
-                end
-
-                % AWGN Channel
+                % AWGN Channel (noise added in time domain)
                 release(awgnChannel);
-                powerDB = 10*log10(var(fadedSig));
+                powerDB = 10*log10(var(txSig));
                 noiseVar = 10.^(0.1*(powerDB-snr(m)));
-                rxSig = awgnChannel(fadedSig, noiseVar);
+                rxSig = awgnChannel(txSig, noiseVar);
 
                 % OFDM demodulation -> SFFT (TF -> DD)
                 % Do NOT equalize before SFFT — DD pilot needs raw channel response
