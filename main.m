@@ -78,11 +78,17 @@ fd_hz = v_ms * fc / physconst('LightSpeed');             % Max Doppler shift (Hz
 Ts_sym = (1 + cpSize) / scs;                            % OFDM symbol duration with CP
 delta_nu_hz = 1 / (ofdmSym * Ts_sym);                   % Doppler resolution (Hz)
 
-pilotConfig.kp = ceil(ofdmSym/2);                       % Pilot Doppler index (center)
-pilotConfig.lp = ceil((Bw/scs - 12)/2);                 % Pilot delay index (center)
-pilotConfig.lGuard = ceil(maxDelayspread_s / delta_tau_s); % Delay guard (bins)
-pilotConfig.kGuard = ceil(fd_hz / delta_nu_hz) + 1;     % Doppler guard (bins)
-pilotConfig.pilotBoostdB = 10;                           % Pilot power boost (dB)
+% Doppler pre-compensation from satellite ephemeris (standard in NR-NTN)
+% Removes bulk Doppler, leaving only residual scatter spread
+fd_precomp_hz = fd_hz;                                      % Pre-comp value (from ephemeris)
+residualScatter_hz = 0.05 * fd_hz;                          % Residual scatter after pre-comp
+residualScatter_bins = ceil(residualScatter_hz / delta_nu_hz);
+
+pilotConfig.kp = ceil(ofdmSym/2);                           % Pilot Doppler index (center)
+pilotConfig.lp = ceil((Bw/scs - 12)/2);                     % Pilot delay index (center)
+pilotConfig.lGuard = 2 * ceil(maxDelayspread_s / delta_tau_s) + 1; % Delay guard: 2x for data protection
+pilotConfig.kGuard = 2 * residualScatter_bins + 2;          % Doppler guard: residual only (pre-comp)
+pilotConfig.pilotBoostdB = 10;                               % Pilot power boost (dB)
 
 % Create Vectors for storing error data
 berOFDM = zeros(length(EbNo),3); berCOFDM = zeros(length(EbNo),3); berOTFS = zeros(length(EbNo),3); berCOTFS = zeros(length(EbNo),3);
@@ -313,9 +319,9 @@ for repetition=1:repeats                                % Repeat simulation mult
         [ddGrid, dataIdx, pilotIdx, guardIdx, pilotInfoTx] = ...
             pilotPatternDD(dataSyms, size(subframe,1), ofdmSym, pilotConfig);
 
-        % Apply channel directly in DD domain (exact for any Doppler)
+        % Apply channel in DD domain with Doppler pre-compensation
         txDDGrids{w} = ddGrid;
-        rxDDGrids_faded{w} = applyChannelDD(ddGrid, chInfo, scs, cpSize);
+        rxDDGrids_faded{w} = applyChannelDD(ddGrid, chInfo, scs, cpSize, fd_precomp_hz);
     end
 
     % --- Receiver: Add noise in DD domain and estimate/equalize ---
@@ -426,25 +432,31 @@ for repetition=1:repeats                                % Repeat simulation mult
     los_frac_delay   = navInfo.losFracDelay;    % Fractional delay (bins)
 
     % Convert LoS path to physical values (using fractional estimates)
+    % Add back the pre-compensated bulk Doppler (from ephemeris)
     % NOTE: SFFT convention maps positive Doppler to negative DD bins
-    %       (MATLAB IFFT uses exp(+j2pi*n*k/N), reversing the sign)
     %       Physical Doppler = -DD_Doppler_shift * delta_nu
-    tau_los = los_frac_delay * delta_tau;       % Propagation delay (s)
-    nu_los  = -los_frac_doppler * delta_nu;     % Doppler shift (Hz) — negate for SFFT sign
-    range_los = tau_los * c;                    % One-way range (m)
-    v_est = nu_los * c / fc;                    % Estimated radial velocity (m/s)
-    v_est_kmh = v_est * 3.6;                    % Convert to km/hr
+    tau_los = los_frac_delay * delta_tau;                   % Propagation delay (s)
+    nu_residual = -los_frac_doppler * delta_nu;             % Residual Doppler (Hz) — negate for SFFT sign
+    nu_los  = nu_residual + fd_precomp_hz;                  % Total Doppler = residual + bulk (Hz)
+    range_los = tau_los * c;                                % One-way range (m)
+    v_est = nu_los * c / fc;                                % Estimated radial velocity (m/s)
+    v_est_kmh = v_est * 3.6;                                % Convert to km/hr
 
     % True velocity for comparison
     v_true_kmh = velocity;                      % From simulation parameter (km/hr)
     v_true_ms  = velocity * 1e3 / 3600;         % m/s
     fd_true = v_true_ms * fc / c;               % True max Doppler shift (Hz)
 
+    fprintf('\n  Doppler pre-compensation = %.2f Hz (from ephemeris)\n', fd_precomp_hz);
+    fprintf('  Residual Doppler guard   = %d bins (kGuard)\n', pilotConfig.kGuard);
     fprintf('\n--- LoS Path (strongest, Path %d) ---\n', losIdx);
     fprintf('  Delay   = %+d bins (frac: %+.2f)  =>  tau = %.2f ns  =>  range = %.2f m\n', ...
         los_delay_bin, los_frac_delay, tau_los*1e9, range_los);
-    fprintf('  Doppler = %+d bins (frac: %+.2f)  =>  nu  = %.2f Hz  =>  v_est = %.2f m/s (%.2f km/hr)\n', ...
-        los_doppler_bin, los_frac_doppler, nu_los, v_est, v_est_kmh);
+    fprintf('  Doppler = %+d bins (frac: %+.2f)  =>  nu_residual = %.2f Hz\n', ...
+        los_doppler_bin, los_frac_doppler, nu_residual);
+    fprintf('  Total Doppler = residual + precomp = %.2f + %.2f = %.2f Hz\n', ...
+        nu_residual, fd_precomp_hz, nu_los);
+    fprintf('  v_est = %.2f m/s (%.2f km/hr)\n', v_est, v_est_kmh);
     fprintf('\n--- Comparison with True Velocity ---\n');
     fprintf('  True velocity       = %.2f m/s  (%.2f km/hr)\n', v_true_ms, v_true_kmh);
     fprintf('  True max Doppler fd = %.2f Hz\n', fd_true);
@@ -458,7 +470,7 @@ for repetition=1:repeats                                % Repeat simulation mult
         'Path', 'Delay(ns)', 'Range(m)', 'Doppler(Hz)', 'Velocity(m/s)', '|Gain|');
     for pp = 1:length(navInfo.pathDelays)
         tau_pp = navInfo.pathDelays(pp) * delta_tau;
-        nu_pp  = -navInfo.pathDopplers(pp) * delta_nu;  % Negate for SFFT sign
+        nu_pp  = -navInfo.pathDopplers(pp) * delta_nu + fd_precomp_hz;  % Negate for SFFT sign + add bulk Doppler
         range_pp = tau_pp * c;
         v_pp = nu_pp * c / fc;
         fprintf('  %-6d  %-12.2f  %-12.2f  %-14.2f  %-14.2f  %-10.3f\n', ...
