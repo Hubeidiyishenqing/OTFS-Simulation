@@ -36,14 +36,26 @@ n = zeros(1,N);                                          % delay_Doppler rows (d
 m = zeros(1,M);                                          % delay_Doppler cols (delay)
 H = transpose(n).*m;                                     % Create matrix
 
-% Generate Channel Parameter
-maxDelayspread = 0.5*((cpSize)/delta_f);  % Calculate max delay spread with 1/2 rule pf thumb
-L = round(2*maxDelayspread * M*delta_f);  % Calculate necesary paths from bandwidth
+% Generate Channel Parameter (LEO satellite Rician channel)
+maxDelayspread = min(0.5*((cpSize)/delta_f), 500e-9); % Cap at 500 ns for LEO
+L = min(round(2*maxDelayspread * M*delta_f), 6);      % Cap at 6 paths for LEO
+L = max(L, 2);                                         % At least 2 paths
 step = maxDelayspread/L;                  % calculate difference between delays
 pathDelays = (0:step:maxDelayspread);     % Discrete even delays of L-path channel
 range shuffle;                            % Shuffle random no. generator
-avgPathGains_dB = -(randi([3,7],[L,1]));  % Generate  random path gains in dB
-avgPathGains = 10.^(0.1*avgPathGains_dB); % Convert to linear
+
+% Rician K-factor for LEO satellite (strong LoS component)
+K_ric_dB = 10;                              % K-factor in dB
+K_ric = 10^(K_ric_dB/10);                  % Linear K-factor
+avgPathGains = zeros(L, 1);
+avgPathGains(1) = sqrt(K_ric / (K_ric + 1)); % LoS path (dominant)
+% NLOS paths: exponentially decaying power profile
+nlosPowerTotal = 1 / (K_ric + 1);
+nlosDecay = exp(-(0:L-2) / max(1, (L-2)/2));
+nlosDecay = nlosDecay / sum(nlosDecay);       % Normalize to sum=1
+for i = 2:L
+    avgPathGains(i) = sqrt(nlosPowerTotal * nlosDecay(i-1));
+end
 
 % Calculate Max Doppler Shift
 v = velocity*1e3/3600;                   % Mobile speed (m/s)

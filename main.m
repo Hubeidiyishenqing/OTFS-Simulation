@@ -69,12 +69,20 @@ noCodedbits = size(parityCheck_matrix,2);               % Find the Codeword leng
 %--------------------------------------------------------------------------
 % LEO Satellite Pilot Pattern Configuration (DD domain)
 %--------------------------------------------------------------------------
-% For LEO: large Doppler spread requires wide Doppler guard band
-pilotConfig.kp = ceil(ofdmSym/2);       % Pilot Doppler index (center)
-pilotConfig.lp = ceil((Bw/scs - 12)/2); % Pilot delay index (center of data carriers)
-pilotConfig.kGuard = 4;                 % Doppler guard (wide for LEO high Doppler)
-pilotConfig.lGuard = 2;                 % Delay guard
-pilotConfig.pilotBoostdB = 10;          % Pilot power boost (dB) - balance nav vs comm
+% Guard bands sized to match LEO channel delay/Doppler spread
+% Must match multipathChannel.m parameters (500 ns delay spread cap)
+delta_tau_s = 1 / (numSC * scs);                        % Delay resolution (s)
+maxDelayspread_s = min(0.5 * cpSize / scs, 500e-9);     % LEO capped delay spread
+v_ms = velocity * 1e3 / 3600;                           % Velocity in m/s
+fd_hz = v_ms * fc / physconst('LightSpeed');             % Max Doppler shift (Hz)
+Ts_sym = (1 + cpSize) / scs;                            % OFDM symbol duration with CP
+delta_nu_hz = 1 / (ofdmSym * Ts_sym);                   % Doppler resolution (Hz)
+
+pilotConfig.kp = ceil(ofdmSym/2);                       % Pilot Doppler index (center)
+pilotConfig.lp = ceil((Bw/scs - 12)/2);                 % Pilot delay index (center)
+pilotConfig.lGuard = ceil(maxDelayspread_s / delta_tau_s); % Delay guard (bins)
+pilotConfig.kGuard = ceil(fd_hz / delta_nu_hz) + 1;     % Doppler guard (bins)
+pilotConfig.pilotBoostdB = 10;                           % Pilot power boost (dB)
 
 % Create Vectors for storing error data
 berOFDM = zeros(length(EbNo),3); berCOFDM = zeros(length(EbNo),3); berOTFS = zeros(length(EbNo),3); berCOTFS = zeros(length(EbNo),3);
