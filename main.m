@@ -335,10 +335,9 @@ for repetition=1:repeats                                % Repeat simulation mult
                 rxSig = awgnChannel(fadedSig, noiseVar);
 
                 % OFDM demodulation -> SFFT (TF -> DD)
-                % Use time-domain equalizer first, then SFFT
-                eqSig = equaliser(rxSig, fadedSig, txSig, ofdmSym);
-                otfsRx = demodOFDM(eqSig, cpLen, ofdmSym);
-                rxDD = SFFT(otfsRx);
+                % Do NOT equalize before SFFT — DD pilot needs raw channel response
+                otfsRx_raw = demodOFDM(rxSig, cpLen, ofdmSym);
+                rxDD = SFFT(otfsRx_raw);
 
                 % DD-domain channel estimation using pilot
                 [hEst, delayEst, dopplerEst, navInfo] = ddChannelEstimate(rxDD, pilotInfoTx);
@@ -428,9 +427,13 @@ for repetition=1:repeats                                % Repeat simulation mult
     los_delay_bin   = navInfo.pathDelays(losIdx);
     los_doppler_bin = navInfo.pathDopplers(losIdx);
 
-    % Convert LoS path bins to physical values
-    tau_los = los_delay_bin * delta_tau;        % Propagation delay (s)
-    nu_los  = los_doppler_bin * delta_nu;       % Doppler shift (Hz)
+    % Use fractional Doppler/delay from parabolic interpolation
+    los_frac_doppler = navInfo.losFracDoppler;  % Fractional Doppler (bins)
+    los_frac_delay   = navInfo.losFracDelay;    % Fractional delay (bins)
+
+    % Convert LoS path to physical values (using fractional estimates)
+    tau_los = los_frac_delay * delta_tau;       % Propagation delay (s)
+    nu_los  = los_frac_doppler * delta_nu;      % Doppler shift (Hz)
     range_los = tau_los * c;                    % One-way range (m)
     v_est = nu_los * c / fc;                    % Estimated radial velocity (m/s)
     v_est_kmh = v_est * 3.6;                    % Convert to km/hr
@@ -441,10 +444,10 @@ for repetition=1:repeats                                % Repeat simulation mult
     fd_true = v_true_ms * fc / c;               % True max Doppler shift (Hz)
 
     fprintf('\n--- LoS Path (strongest, Path %d) ---\n', losIdx);
-    fprintf('  Delay   = %+d bins  =>  tau = %.2f ns  =>  range = %.2f m\n', ...
-        los_delay_bin, tau_los*1e9, range_los);
-    fprintf('  Doppler = %+d bins  =>  nu  = %.2f Hz  =>  v_est = %.2f m/s (%.2f km/hr)\n', ...
-        los_doppler_bin, nu_los, v_est, v_est_kmh);
+    fprintf('  Delay   = %+d bins (frac: %+.2f)  =>  tau = %.2f ns  =>  range = %.2f m\n', ...
+        los_delay_bin, los_frac_delay, tau_los*1e9, range_los);
+    fprintf('  Doppler = %+d bins (frac: %+.2f)  =>  nu  = %.2f Hz  =>  v_est = %.2f m/s (%.2f km/hr)\n', ...
+        los_doppler_bin, los_frac_doppler, nu_los, v_est, v_est_kmh);
     fprintf('\n--- Comparison with True Velocity ---\n');
     fprintf('  True velocity       = %.2f m/s  (%.2f km/hr)\n', v_true_ms, v_true_kmh);
     fprintf('  True max Doppler fd = %.2f Hz\n', fd_true);

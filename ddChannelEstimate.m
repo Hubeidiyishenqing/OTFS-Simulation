@@ -101,6 +101,36 @@ if isempty(delayEst)
     pathGains = rxGrid(lp, kp);
 end
 
+%% Fractional Doppler estimation for LoS path (parabolic interpolation)
+% Find the strongest path (LoS candidate)
+[~, losIdx] = max(abs(pathGains));
+losRow = lp + delayEst(losIdx);   % row index in rxGrid
+losCol = kp + dopplerEst(losIdx); % col index in rxGrid
+
+% Parabolic interpolation along Doppler (column) dimension
+fracDopplerShift = dopplerEst(losIdx);  % default: integer bin
+if losCol > 1 && losCol < M
+    alpha = abs(rxGrid(losRow, losCol - 1));
+    beta  = abs(rxGrid(losRow, losCol));
+    gamma = abs(rxGrid(losRow, losCol + 1));
+    if (2*beta - alpha - gamma) ~= 0
+        delta_k = 0.5 * (alpha - gamma) / (alpha - 2*beta + gamma);
+        fracDopplerShift = dopplerEst(losIdx) + delta_k;
+    end
+end
+
+% Parabolic interpolation along delay (row) dimension
+fracDelayShift = delayEst(losIdx);  % default: integer bin
+if losRow > 1 && losRow < N
+    alpha = abs(rxGrid(losRow - 1, losCol));
+    beta  = abs(rxGrid(losRow, losCol));
+    gamma = abs(rxGrid(losRow + 1, losCol));
+    if (2*beta - alpha - gamma) ~= 0
+        delta_l = 0.5 * (alpha - gamma) / (alpha - 2*beta + gamma);
+        fracDelayShift = delayEst(losIdx) + delta_l;
+    end
+end
+
 %% Navigation information extraction
 navInfo.pathDelays = delayEst;
 navInfo.pathDopplers = dopplerEst;
@@ -113,5 +143,7 @@ else
     navInfo.snrPilot = Inf;
 end
 navInfo.numPathsDetected = length(delayEst);
+navInfo.losFracDoppler = fracDopplerShift;  % Fractional Doppler of LoS (bins)
+navInfo.losFracDelay = fracDelayShift;      % Fractional delay of LoS (bins)
 
 end
