@@ -101,34 +101,59 @@ if isempty(delayEst)
     pathGains = rxGrid(lp, kp);
 end
 
-%% Fractional Doppler estimation for LoS path (parabolic interpolation)
-% Find the strongest path (LoS candidate)
+%% Fractional Doppler estimation for LoS path (Quinn estimator)
+% Quinn's second estimator uses complex DFT bins for optimal accuracy.
+% Reference: Quinn, "Estimating frequency by interpolation using
+%            Fourier coefficients," IEEE Trans. SP, 1994.
 [~, losIdx] = max(abs(pathGains));
 losRow = lp + delayEst(losIdx);   % row index in rxGrid
 losCol = kp + dopplerEst(losIdx); % col index in rxGrid
 
-% Parabolic interpolation along Doppler (column) dimension
+% Quinn estimator along Doppler (column) dimension
 fracDopplerShift = dopplerEst(losIdx);  % default: integer bin
 if losCol > 1 && losCol < M
-    alpha = abs(rxGrid(losRow, losCol - 1));
-    beta  = abs(rxGrid(losRow, losCol));
-    gamma = abs(rxGrid(losRow, losCol + 1));
-    if (2*beta - alpha - gamma) ~= 0
-        delta_k = 0.5 * (alpha - gamma) / (alpha - 2*beta + gamma);
-        fracDopplerShift = dopplerEst(losIdx) + delta_k;
+    Xm1 = rxGrid(losRow, losCol - 1);   % Complex value at k-1
+    X0  = rxGrid(losRow, losCol);        % Complex value at k (peak)
+    Xp1 = rxGrid(losRow, losCol + 1);   % Complex value at k+1
+
+    % Quinn's second estimator
+    ap = real(Xp1 / X0);
+    am = real(Xm1 / X0);
+    dp = -ap / (1 - ap);
+    dm = am / (1 - am);
+
+    % Use the estimate from the side with smaller magnitude
+    if abs(dp) < abs(dm)
+        delta_k = dp;
+    else
+        delta_k = dm;
     end
+
+    % Clamp to ±0.5 for safety
+    delta_k = max(-0.5, min(0.5, delta_k));
+    fracDopplerShift = dopplerEst(losIdx) + delta_k;
 end
 
-% Parabolic interpolation along delay (row) dimension
+% Quinn estimator along delay (row) dimension
 fracDelayShift = delayEst(losIdx);  % default: integer bin
 if losRow > 1 && losRow < N
-    alpha = abs(rxGrid(losRow - 1, losCol));
-    beta  = abs(rxGrid(losRow, losCol));
-    gamma = abs(rxGrid(losRow + 1, losCol));
-    if (2*beta - alpha - gamma) ~= 0
-        delta_l = 0.5 * (alpha - gamma) / (alpha - 2*beta + gamma);
-        fracDelayShift = delayEst(losIdx) + delta_l;
+    Xm1 = rxGrid(losRow - 1, losCol);
+    X0  = rxGrid(losRow, losCol);
+    Xp1 = rxGrid(losRow + 1, losCol);
+
+    ap = real(Xp1 / X0);
+    am = real(Xm1 / X0);
+    dp = -ap / (1 - ap);
+    dm = am / (1 - am);
+
+    if abs(dp) < abs(dm)
+        delta_l = dp;
+    else
+        delta_l = dm;
     end
+
+    delta_l = max(-0.5, min(0.5, delta_l));
+    fracDelayShift = delayEst(losIdx) + delta_l;
 end
 
 %% Navigation information extraction

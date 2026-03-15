@@ -430,8 +430,11 @@ for repetition=1:repeats                                % Repeat simulation mult
     los_frac_delay   = navInfo.losFracDelay;    % Fractional delay (bins)
 
     % Convert LoS path to physical values (using fractional estimates)
+    % NOTE: SFFT convention maps positive Doppler to negative DD bins
+    %       (MATLAB IFFT uses exp(+j2pi*n*k/N), reversing the sign)
+    %       Physical Doppler = -DD_Doppler_shift * delta_nu
     tau_los = los_frac_delay * delta_tau;       % Propagation delay (s)
-    nu_los  = los_frac_doppler * delta_nu;      % Doppler shift (Hz)
+    nu_los  = -los_frac_doppler * delta_nu;     % Doppler shift (Hz) — negate for SFFT sign
     range_los = tau_los * c;                    % One-way range (m)
     v_est = nu_los * c / fc;                    % Estimated radial velocity (m/s)
     v_est_kmh = v_est * 3.6;                    % Convert to km/hr
@@ -459,7 +462,7 @@ for repetition=1:repeats                                % Repeat simulation mult
         'Path', 'Delay(ns)', 'Range(m)', 'Doppler(Hz)', 'Velocity(m/s)', '|Gain|');
     for pp = 1:length(navInfo.pathDelays)
         tau_pp = navInfo.pathDelays(pp) * delta_tau;
-        nu_pp  = navInfo.pathDopplers(pp) * delta_nu;
+        nu_pp  = -navInfo.pathDopplers(pp) * delta_nu;  % Negate for SFFT sign
         range_pp = tau_pp * c;
         v_pp = nu_pp * c / fc;
         fprintf('  %-6d  %-12.2f  %-12.2f  %-14.2f  %-14.2f  %-10.3f\n', ...
