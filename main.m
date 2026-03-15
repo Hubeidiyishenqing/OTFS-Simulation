@@ -38,6 +38,7 @@ Bw = 10e6;                      % System bandwidth Hz
 ofdmSym = 14;                   % No. OFDM symbols / subframe 
 EbNo = (-3:1:30)';              % Range of energy/bit to noise power ratio
 velocity = 120;                 % Velocity of mobile rx relative tx km/hr
+fc = 3.5e9;                     % Carrier frequency (Hz) - must match multipathChannel.m
 codeRate = 2/4;                 % FEC code rate used
 maxIterations = 25;             % Set maximum no. of iterations for LDPC decoder
 totalBits = 1e6;                % The approx. total no. of bits simulated
@@ -400,6 +401,70 @@ for repetition=1:repeats                                % Repeat simulation mult
             pp, navInfo.pathDelays(pp), navInfo.pathDopplers(pp), abs(navInfo.pathGains(pp)));
     end
     fprintf('---------------------------------------------------\n');
+
+    %----------------------------------------------------------------------
+    %   Velocity & Range Estimation from DD-Domain Pilot Detection
+    %----------------------------------------------------------------------
+    % Physical resolutions of the OTFS DD grid
+    c = physconst('LightSpeed');            % Speed of light (m/s)
+    Ts_sym = (1 + cpSize) / scs;            % OFDM symbol duration with CP (s)
+    N_delay = size(rxDD, 1);                % Number of delay bins (= numSC)
+    M_doppler = size(rxDD, 2);              % Number of Doppler bins (= ofdmSym)
+
+    delta_tau = 1 / (N_delay * scs);        % Delay resolution (s/bin)
+    delta_nu  = 1 / (M_doppler * Ts_sym);   % Doppler resolution (Hz/bin)
+
+    fprintf('\n=== Velocity & Range Estimation ===\n');
+    fprintf('System parameters:\n');
+    fprintf('  Carrier frequency fc     = %.2f GHz\n', fc/1e9);
+    fprintf('  Subcarrier spacing df    = %.0f kHz\n', scs/1e3);
+    fprintf('  Delay bins N             = %d\n', N_delay);
+    fprintf('  Doppler bins M           = %d\n', M_doppler);
+    fprintf('  Delay resolution  d_tau  = %.2f ns  (%.2f m)\n', delta_tau*1e9, delta_tau*c);
+    fprintf('  Doppler resolution d_nu  = %.2f Hz  (%.2f m/s)\n', delta_nu, delta_nu*c/fc);
+
+    % --- Identify LoS path (strongest gain) ---
+    [~, losIdx] = max(abs(navInfo.pathGains));
+    los_delay_bin   = navInfo.pathDelays(losIdx);
+    los_doppler_bin = navInfo.pathDopplers(losIdx);
+
+    % Convert LoS path bins to physical values
+    tau_los = los_delay_bin * delta_tau;        % Propagation delay (s)
+    nu_los  = los_doppler_bin * delta_nu;       % Doppler shift (Hz)
+    range_los = tau_los * c;                    % One-way range (m)
+    v_est = nu_los * c / fc;                    % Estimated radial velocity (m/s)
+    v_est_kmh = v_est * 3.6;                    % Convert to km/hr
+
+    % True velocity for comparison
+    v_true_kmh = velocity;                      % From simulation parameter (km/hr)
+    v_true_ms  = velocity * 1e3 / 3600;         % m/s
+    fd_true = v_true_ms * fc / c;               % True max Doppler shift (Hz)
+
+    fprintf('\n--- LoS Path (strongest, Path %d) ---\n', losIdx);
+    fprintf('  Delay   = %+d bins  =>  tau = %.2f ns  =>  range = %.2f m\n', ...
+        los_delay_bin, tau_los*1e9, range_los);
+    fprintf('  Doppler = %+d bins  =>  nu  = %.2f Hz  =>  v_est = %.2f m/s (%.2f km/hr)\n', ...
+        los_doppler_bin, nu_los, v_est, v_est_kmh);
+    fprintf('\n--- Comparison with True Velocity ---\n');
+    fprintf('  True velocity       = %.2f m/s  (%.2f km/hr)\n', v_true_ms, v_true_kmh);
+    fprintf('  True max Doppler fd = %.2f Hz\n', fd_true);
+    fprintf('  Estimated velocity  = %.2f m/s  (%.2f km/hr)\n', v_est, v_est_kmh);
+    fprintf('  Velocity error      = %.2f m/s  (%.2f km/hr)\n', abs(v_est - v_true_ms), abs(v_est_kmh - v_true_kmh));
+    fprintf('  Relative error      = %.1f%%\n', abs(v_est - v_true_ms)/v_true_ms * 100);
+
+    % --- All paths: physical delay and Doppler ---
+    fprintf('\n--- All Detected Paths (physical values) ---\n');
+    fprintf('  %-6s  %-12s  %-12s  %-14s  %-14s  %-10s\n', ...
+        'Path', 'Delay(ns)', 'Range(m)', 'Doppler(Hz)', 'Velocity(m/s)', '|Gain|');
+    for pp = 1:length(navInfo.pathDelays)
+        tau_pp = navInfo.pathDelays(pp) * delta_tau;
+        nu_pp  = navInfo.pathDopplers(pp) * delta_nu;
+        range_pp = tau_pp * c;
+        v_pp = nu_pp * c / fc;
+        fprintf('  %-6d  %-12.2f  %-12.2f  %-14.2f  %-14.2f  %-10.3f\n', ...
+            pp, tau_pp*1e9, range_pp, nu_pp, v_pp, abs(navInfo.pathGains(pp)));
+    end
+    fprintf('==========================================\n');
 
 end
 
