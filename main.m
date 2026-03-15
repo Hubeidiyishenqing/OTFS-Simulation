@@ -33,12 +33,12 @@ close all;
 M = 16;                         % Modulation alphabet
 k = log2(M);                    % Bits/symbol
 cpSize = 0.07;                  % OFDM cyclic prefix size
-scs = 15e3;                     % Subcarrier spacing Hz
-Bw = 10e6;                      % System bandwidth Hz
-ofdmSym = 40;                   % No. OFDM symbols / subframe (>=39 for Doppler resolution < fd)
+scs = 120e3;                    % Subcarrier spacing Hz (120 kHz for LEO-NTN)
+Bw = 100e6;                     % System bandwidth Hz
+ofdmSym = 128;                  % No. OFDM symbols / subframe (increased for LEO Doppler)
 EbNo = (-3:1:30)';              % Range of energy/bit to noise power ratio
-velocity = 120;                 % Velocity of mobile rx relative tx km/hr
-fc = 3.5e9;                     % Carrier frequency (Hz) - must match multipathChannel.m
+velocity = 26000;               % Velocity of mobile rx relative LEO satellite km/hr
+fc = 2e9;                       % Carrier frequency (Hz) S-band for LEO - must match multipathChannel.m
 codeRate = 2/4;                 % FEC code rate used
 maxIterations = 25;             % Set maximum no. of iterations for LDPC decoder
 totalBits = 1e6;                % The approx. total no. of bits simulated

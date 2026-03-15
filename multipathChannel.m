@@ -58,7 +58,7 @@ end
 
 % Calculate Max Doppler Shift
 v = velocity*1e3/3600;                   % Mobile speed (m/s)
-fc = 3.5e9;                              % Carrier frequency
+fc = 2e9;                                % Carrier frequency (S-band for LEO)
 fd = round(v*fc/physconst('lightspeed'));% Maximum Doppler shift to nearest Hz
 
 % Generate Doppler shifts for LEO satellite channel
